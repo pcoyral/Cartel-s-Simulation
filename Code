@@ -1,107 +1,118 @@
-#Farmers
-#Chemists
-#Wharehouse
-#Transports
-#Bankaccount
-
+import threading
+import queue
 import random
 import time
 
-class CocaLeaf:
-    def __init__(self, creation_time):
-        self.growth_duration = random.randint(5, 15)  # Seconds
-        self.ready_time = creation_time + self.growth_duration
-        self.collected = False
+# Configuration
+NUM_FARMERS = 20
+NUM_CHEMISTS = 10
+LEAF_STORAGE_CAPACITY = 40
+COCAINE_STORAGE_CAPACITY = 50
+LEAVES_NEEDED_FOR_PROCESS = 3
+TRANSPORT_TYPES = [
+    {"name": "Plane", "capacity": 15, "speed": 10},
+    {"name": "Boat", "capacity": 30, "speed": 25},
+    {"name": "Truck", "capacity": 10, "speed": 20}
+]
 
-class Farmer:
-    def __init__(self):
-        self.current_task = None
-        self.collection_duration = 2  # Seconds per leaf
-    
-    def collect_leaves(self, leaves, current_time):
-        ready_leaves = [leaf for leaf in leaves if not leaf.collected and current_time >= leaf.ready_time]
-        if ready_leaves:
-            self.current_task = {
-                'start_time': current_time,
-                'duration': len(ready_leaves) * self.collection_duration,
-                'leaves': ready_leaves
-            }
-        return self.current_task is None
+# Shared resources
+leaf_storage = queue.Queue(maxsize=LEAF_STORAGE_CAPACITY)
+cocaine_storage = {"quantity": 0, "lock": threading.Condition()}
 
-class Chemist:
-    def __init__(self):
-        self.current_task = None
-        self.processing_duration = 5  # Seconds per unit
-    
-    def process_leaves(self, leaves, current_time):
-        if leaves and not self.current_task:
-            self.current_task = {
-                'start_time': current_time,
-                'duration': len(leaves) * self.processing_duration,
-                'leaves': leaves
-            }
-        return self.current_task is None
+class Farmer(threading.Thread):
+    def __init__(self, farmer_id):
+        super().__init__(daemon=True)
+        self.farmer_id = farmer_id
+        self.productivity = random.uniform(0.8, 1.2)
 
-class Storage:
-    def __init__(self):
-        self.cocaine = 0
-        self.transportation = []
+    def run(self):
+        while True:
+            print(f"Farmer {self.farmer_id}: 🌱 Planting coca seeds...")
+            time.sleep(random.randint(2, 5) * self.productivity)
+            
+            if random.random() < 0.1:
+                print(f"Farmer {self.farmer_id}: 😴 Took a siesta")
+                continue
+                
+            try:
+                leaf_storage.put(f"Leaf-{self.farmer_id}", block=False)
+                print(f"Farmer {self.farmer_id}: 🍃 Stored leaf (Total: {leaf_storage.qsize()})")
+            except queue.Full:
+                print(f"Farmer {self.farmer_id}: ❌ Storage full! Lost harvest")
 
-class Transportation:
-    def __init__(self, name, capacity, speed):
+class Chemist(threading.Thread):
+    def __init__(self, chemist_id):
+        super().__init__(daemon=True)
+        self.chemist_id = chemist_id
+        self.process_time = random.randint(4, 7)
+
+    def run(self):
+        while True:
+            # Collect leaves for processing
+            leaves = []
+            for _ in range(LEAVES_NEEDED_FOR_PROCESS):
+                leaves.append(leaf_storage.get())
+
+            # Process into cocaine
+            print(f"Chemist {self.chemist_id}: 🧪 Processing {len(leaves)} leaves into cocaine...")
+            time.sleep(self.process_time)
+
+            # Store final product
+            with cocaine_storage["lock"]:
+                while cocaine_storage["quantity"] >= COCAINE_STORAGE_CAPACITY:
+                    cocaine_storage["lock"].wait()  # Wait until storage has space
+
+                cocaine_storage["quantity"] += 1  # Add cocaine after processing
+                print(f"Chemist {self.chemist_id}: 💼 Produced cocaine (Stock: {cocaine_storage['quantity']})")
+                cocaine_storage["lock"].notify_all()  # Notify that cocaine is available
+
+
+class Distributor(threading.Thread):
+    def __init__(self, transport_id, name, capacity, speed):
+        super().__init__(daemon=True)
+        self.transport_id = transport_id
         self.name = name
         self.capacity = capacity
         self.speed = speed
-        self.current_shipment = None
 
-def simulation_loop():
-    # Initialize components
-    clock = 0
-    leaves = [CocaLeaf(0) for _ in range(10)]  # Initial batch
-    farmer = Farmer()
-    chemist = Chemist()
-    storage = Storage()
-    transports = [
-        Transportation("Plane", 50, 8),
-        Transportation("Boat", 200, 20),
-        Transportation("Truck", 100, 12)
-    ]
-    
+    def run(self):
+        while True:
+            with cocaine_storage["lock"]:
+                # Wait until there is at least 1 unit of cocaine
+                while cocaine_storage["quantity"] < 1:
+                    cocaine_storage["lock"].wait()
+
+                # Safely withdraw cocaine
+                shipment = min(self.capacity, cocaine_storage["quantity"])
+                cocaine_storage["quantity"] -= shipment
+
+                print(f"{self.name} {self.transport_id}: 🚚 Shipped {shipment} units (Remaining: {cocaine_storage['quantity']})")
+
+                # Notify producers in case they were waiting for storage space
+                cocaine_storage["lock"].notify_all()
+
+            # Simulate delivery time
+            time.sleep(self.speed)
+            print(f"{self.name} {self.transport_id}: ✅ Delivered {shipment} cocaine units")
+
+
+# Create simulation entities
+farmers = [Farmer(i) for i in range(NUM_FARMERS)]
+chemists = [Chemist(i) for i in range(NUM_CHEMISTS)]
+distributors = [Distributor(i, **t) for i, t in enumerate(TRANSPORT_TYPES)]
+
+# Start all threads
+for entity in farmers + chemists + distributors:
+    entity.start()
+
+# Monitor system status
+try:
     while True:
-        # Farmer logic
-        if farmer.current_task is None:
-            farmer.collect_leaves(leaves, clock)
-        else:
-            if clock >= farmer.current_task['start_time'] + farmer.current_task['duration']:
-                for leaf in farmer.current_task['leaves']:
-                    leaf.collected = True
-                farmer.current_task = None
-
-        # Chemist logic
-        collected_leaves = [leaf for leaf in leaves if leaf.collected]
-        if chemist.current_task is None and collected_leaves:
-            chemist.process_leaves(collected_leaves, clock)
-        elif chemist.current_task and clock >= chemist.current_task['start_time'] + chemist.current_task['duration']:
-            storage.cocaine += len(chemist.current_task['leaves'])
-            chemist.current_task = None
-
-        # Transportation logic
-        for transport in transports:
-            if storage.cocaine > 0 and transport.current_shipment is None:
-                amount = min(transport.capacity, storage.cocaine)
-                transport.current_shipment = {
-                    'start_time': clock,
-                    'amount': amount
-                }
-                storage.cocaine -= amount
-            elif transport.current_shipment and clock >= transport.current_shipment['start_time'] + transport.speed:
-                print(f"{transport.name} delivered {transport.current_shipment['amount']} units")
-                transport.current_shipment = None
-
-        # Advance simulation time
-        time.sleep(1)
-        clock += 1
-        print(f"Time: {clock}s - Storage: {storage.cocaine} units")
-
-# Start simulation
-simulation_loop()
+        time.sleep(5)
+        print("\n=== SYSTEM STATUS ===")
+        print(f"Leaves waiting processing: {leaf_storage.qsize()}/{LEAF_STORAGE_CAPACITY}")
+        print(f"Cocaine inventory: {cocaine_storage['quantity']}/{COCAINE_STORAGE_CAPACITY}")
+        print("Active shipments:", [f"{d.name} {d.transport_id}" for d in distributors if d.is_alive()])
+        print("====================\n")
+except KeyboardInterrupt:
+    print("🛑 Simulation stopped")
