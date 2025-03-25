@@ -6,18 +6,71 @@ import time
 # Configuration
 NUM_FARMERS = 20
 NUM_CHEMISTS = 10
-LEAF_STORAGE_CAPACITY = 40
+INITIAL_LEAF_STORAGE_CAPACITY = 40
 COCAINE_STORAGE_CAPACITY = 50
-LEAVES_NEEDED_FOR_PROCESS = 3
+LEAVES_NEEDED_FOR_PROCESS = 1
 TRANSPORT_TYPES = [
-    {"name": "Plane", "capacity": 15, "speed": 10},
-    {"name": "Boat", "capacity": 30, "speed": 25},
-    {"name": "Truck", "capacity": 10, "speed": 20}
+    {"name": "Plane", "capacity": 15, "speed": 10, "cost": 500, "routes": [
+        {"name": "Route A", "revenue_per_unit": 250},
+        {"name": "Route B", "revenue_per_unit": 220},
+        {"name": "Route C", "revenue_per_unit": 270},
+        {"name": "Route D", "revenue_per_unit": 300}
+    ]},
+    {"name": "Boat", "capacity": 30, "speed": 25, "cost": 300, "routes": [
+        {"name": "Harbor A", "revenue_per_unit": 180},
+        {"name": "Harbor B", "revenue_per_unit": 200},
+        {"name": "Harbor C", "revenue_per_unit": 190},
+        {"name": "Harbor D", "revenue_per_unit": 210}
+    ]},
+    {"name": "Truck", "capacity": 10, "speed": 20, "cost": 100, "routes": [
+        {"name": "Border A", "revenue_per_unit": 150},
+        {"name": "Border B", "revenue_per_unit": 160},
+        {"name": "Border C", "revenue_per_unit": 140},
+        {"name": "Border D", "revenue_per_unit": 170}
+    ]}
 ]
+SIMULATION_TIME_LIMIT = 120
+INITIAL_CARTEL_FUNDS = 1700
+FARMER_FEE = 5
+CHEMIST_FEE = 10
+BANK_LOAN_LIMIT = 2000
+LOAN_INTEREST = 0.05
+STORAGE_EXPANSION_COST = 50
+STORAGE_EXPANSION_SIZE = 10
 
-# Shared resources
-leaf_storage = queue.Queue(maxsize=LEAF_STORAGE_CAPACITY)
+leaf_storage_capacity = INITIAL_LEAF_STORAGE_CAPACITY
+leaf_storage = queue.Queue(maxsize=leaf_storage_capacity)
 cocaine_storage = {"quantity": 0, "lock": threading.Condition()}
+overflow_penalty = 0
+cartel_funds_lock = threading.Lock()
+cartel_funds = INITIAL_CARTEL_FUNDS
+cartel_loan = 0
+
+class Payroll(threading.Thread):
+    def run(self):
+        global cartel_funds, cartel_loan
+        while True:
+            time.sleep(20)
+            with cartel_funds_lock:
+                for _ in range(NUM_FARMERS):
+                    if cartel_funds < FARMER_FEE:
+                        needed = FARMER_FEE - cartel_funds
+                        if cartel_loan + needed <= BANK_LOAN_LIMIT:
+                            cartel_loan += needed
+                            cartel_funds += needed
+                            print(f"💸 Loan of ${needed} taken for farmer payroll. Total loan: ${cartel_loan}")
+                    cartel_funds -= FARMER_FEE
+                    print(f"💰 Paid farmer fee: ${FARMER_FEE}. Remaining funds: ${cartel_funds}.")
+
+                for _ in range(NUM_CHEMISTS):
+                    if cartel_funds < CHEMIST_FEE:
+                        needed = CHEMIST_FEE - cartel_funds
+                        if cartel_loan + needed <= BANK_LOAN_LIMIT:
+                            cartel_loan += needed
+                            cartel_funds += needed
+                            print(f"💸 Loan of ${needed} taken for chemist payroll. Total loan: ${cartel_loan}")
+                    cartel_funds -= CHEMIST_FEE
+                    print(f"💰 Paid chemist fee: ${CHEMIST_FEE}. Remaining funds: ${cartel_funds}.")
 
 class Farmer(threading.Thread):
     def __init__(self, farmer_id):
@@ -26,93 +79,142 @@ class Farmer(threading.Thread):
         self.productivity = random.uniform(0.8, 1.2)
 
     def run(self):
+        global leaf_storage, leaf_storage_capacity
         while True:
-            print(f"Farmer {self.farmer_id}: 🌱 Planting coca seeds...")
+            print(f"Farmer {self.farmer_id}: 🌱 Planting...")
             time.sleep(random.randint(2, 5) * self.productivity)
-            
-            if random.random() < 0.1:
-                print(f"Farmer {self.farmer_id}: 😴 Took a siesta")
+            if random.random() < 0.15:
+                print(f"Farmer {self.farmer_id}: 🌿 Pests destroyed harvest.")
                 continue
-                
+
+            quality = random.choice(['Low', 'Medium', 'High'])
             try:
-                leaf_storage.put(f"Leaf-{self.farmer_id}", block=False)
-                print(f"Farmer {self.farmer_id}: 🍃 Stored leaf (Total: {leaf_storage.qsize()})")
+                leaf_storage.put((f"Leaf-{self.farmer_id}", quality), block=False)
+                print(f"Farmer {self.farmer_id}: 🍃 Stored {quality} quality leaf.")
             except queue.Full:
-                print(f"Farmer {self.farmer_id}: ❌ Storage full! Lost harvest")
+                with cartel_funds_lock:
+                    if cartel_funds >= STORAGE_EXPANSION_COST:
+                        cartel_funds -= STORAGE_EXPANSION_COST
+                        leaf_storage_capacity += STORAGE_EXPANSION_SIZE
+                        leaf_storage = queue.Queue(maxsize=leaf_storage_capacity)
+                        print(f"📦 Storage expanded! New capacity: {leaf_storage_capacity}. Funds left: ${cartel_funds}")
+                    else:
+                        print(f"Farmer {self.farmer_id}: ❌ Storage full. Cannot expand, insufficient funds.")
 
 class Chemist(threading.Thread):
     def __init__(self, chemist_id):
         super().__init__(daemon=True)
         self.chemist_id = chemist_id
         self.process_time = random.randint(4, 7)
+        self.skill_level = random.uniform(0.7, 1.3)
+        self.reputation = random.uniform(0.5, 1.5)
 
     def run(self):
         while True:
-            # Collect leaves for processing
-            leaves = []
-            for _ in range(LEAVES_NEEDED_FOR_PROCESS):
-                leaves.append(leaf_storage.get())
+            leaf, quality = leaf_storage.get()
+            print(f"Chemist {self.chemist_id}: Processing {quality} quality leaf...")
+            time.sleep(self.process_time * (2 - self.skill_level))
 
-            # Process into cocaine
-            print(f"Chemist {self.chemist_id}: 🧪 Processing {len(leaves)} leaves into cocaine...")
-            time.sleep(self.process_time)
+            if random.random() < (0.1 * (2 - self.reputation)):
+                print(f"Chemist {self.chemist_id}: 🚨 Police raid! Batch lost.")
+                continue
 
-            # Store final product
+            fail_chance = (quality == 'Low') * 0.2 / self.skill_level
+            if random.random() < fail_chance:
+                print(f"Chemist {self.chemist_id}: ❌ Failed due to poor quality.")
+                continue
+
             with cocaine_storage["lock"]:
                 while cocaine_storage["quantity"] >= COCAINE_STORAGE_CAPACITY:
-                    cocaine_storage["lock"].wait()  # Wait until storage has space
+                    cocaine_storage["lock"].wait()
 
-                cocaine_storage["quantity"] += 1  # Add cocaine after processing
-                print(f"Chemist {self.chemist_id}: 💼 Produced cocaine (Stock: {cocaine_storage['quantity']})")
-                cocaine_storage["lock"].notify_all()  # Notify that cocaine is available
-
+                cocaine_storage["quantity"] += 1
+                print(f"Chemist {self.chemist_id}: 💼 Produced cocaine. Stock: {cocaine_storage['quantity']}.")
+                cocaine_storage["lock"].notify_all()
 
 class Distributor(threading.Thread):
-    def __init__(self, transport_id, name, capacity, speed):
+    def __init__(self, transport_id, name, capacity, speed, cost, routes):
         super().__init__(daemon=True)
         self.transport_id = transport_id
         self.name = name
         self.capacity = capacity
         self.speed = speed
+        self.cost = cost
+        self.routes = routes
 
     def run(self):
+        global cartel_funds
         while True:
             with cocaine_storage["lock"]:
-                # Wait until there is at least 1 unit of cocaine
                 while cocaine_storage["quantity"] < 1:
                     cocaine_storage["lock"].wait()
 
-                # Safely withdraw cocaine
                 shipment = min(self.capacity, cocaine_storage["quantity"])
                 cocaine_storage["quantity"] -= shipment
-
-                print(f"{self.name} {self.transport_id}: 🚚 Shipped {shipment} units (Remaining: {cocaine_storage['quantity']})")
-
-                # Notify producers in case they were waiting for storage space
+                print(f"{self.name} {self.transport_id}: Preparing shipment of {shipment} units.")
                 cocaine_storage["lock"].notify_all()
 
-            # Simulate delivery time
+            with cartel_funds_lock:
+                if cartel_funds < self.cost:
+                    needed = self.cost - cartel_funds
+                    if cartel_loan + needed <= BANK_LOAN_LIMIT:
+                        cartel_loan += needed
+                        cartel_funds += needed
+                        print(f"💸 Loan of ${needed} taken for transport. Total loan: ${cartel_loan}")
+                    else:
+                        print(f"{self.name} {self.transport_id}: 🚫 No funds or loan capacity. Skipping.")
+                        time.sleep(5)
+                        continue
+                cartel_funds -= self.cost
+
+            if random.random() < 0.2:
+                delay = random.randint(5, 15)
+                if random.random() < 0.5:
+                    delay //= 2
+                    print(f"{self.name} {self.transport_id}: 💵 Bribe reduced delay.")
+                else:
+                    print(f"{self.name} {self.transport_id}: 🛂 Inspection delay {delay} seconds.")
+                time.sleep(delay)
+
             time.sleep(self.speed)
-            print(f"{self.name} {self.transport_id}: ✅ Delivered {shipment} cocaine units")
 
+            with cartel_funds_lock:
+                chosen_route = random.choice(self.routes)
+                income = shipment * chosen_route['revenue_per_unit']
+                print(f"🚚 {self.name} {self.transport_id} took {chosen_route['name']} route, earning ${income}.")
 
-# Create simulation entities
+                cartel_funds += income
+                print(f"🚚 Shipment by {self.name} {self.transport_id}: {shipment} units delivered. Current funds: ${cartel_funds}.")
+
 farmers = [Farmer(i) for i in range(NUM_FARMERS)]
 chemists = [Chemist(i) for i in range(NUM_CHEMISTS)]
 distributors = [Distributor(i, **t) for i, t in enumerate(TRANSPORT_TYPES)]
 
-# Start all threads
-for entity in farmers + chemists + distributors:
-    entity.start()
+for f in farmers:
+    f.start()
 
-# Monitor system status
+for c in chemists:
+    c.start()
+
+for d in distributors:
+    d.start()
+
+Payroll().start()
+
+start_time = time.time()
 try:
-    while True:
+    while time.time() - start_time < SIMULATION_TIME_LIMIT:
         time.sleep(5)
+        with cartel_funds_lock:
+            print(f"💰 Status: Funds=${cartel_funds}, Loan=${cartel_loan}")
         print("\n=== SYSTEM STATUS ===")
-        print(f"Leaves waiting processing: {leaf_storage.qsize()}/{LEAF_STORAGE_CAPACITY}")
-        print(f"Cocaine inventory: {cocaine_storage['quantity']}/{COCAINE_STORAGE_CAPACITY}")
-        print("Active shipments:", [f"{d.name} {d.transport_id}" for d in distributors if d.is_alive()])
+        print(f"Leaves: {leaf_storage.qsize()}/{leaf_storage_capacity}")
+        print(f"Cocaine: {cocaine_storage['quantity']}/{COCAINE_STORAGE_CAPACITY}")
+        print(f"Overflow penalties: {overflow_penalty}")
+        print(f"Storage capacity: {leaf_storage_capacity}")
         print("====================\n")
+
+    print("🏁 Simulation complete.")
 except KeyboardInterrupt:
-    print("🛑 Simulation stopped")
+    print("🛑 Simulation interrupted.")
+
